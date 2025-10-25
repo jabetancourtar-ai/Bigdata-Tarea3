@@ -1,0 +1,80 @@
+# ===========================================
+# tarea4.py  —  Imprime 2 tablas en consola:
+# 1) Top 10 diagnósticos más comunes (global)
+# 2) Top 3 diagnósticos por rango de edad (ordenado)
+# Ejecuta:  python3 tarea4.py
+# ===========================================
+
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number, col, when
+
+# ---- Config ----
+INPUT_PATH = 'hdfs://localhost:9000/Tarea4/rows.csv'
+COL_EDAD   = 'EDAD DE ATENCION (AÑOS)'
+COL_ANO    = 'AÑO REPORTADO'
+COL_DX     = 'NOMBRE DEL DIAGNOSTICO'
+
+# ---- Spark ----
+spark = SparkSession.builder.appName('Tarea4').getOrCreate()
+spark.sparkContext.setLogLevel("WARN")
+
+# ---- Carga CSV desde HDFS ----
+df = (spark.read.format('csv')
+      .option('header', 'true')
+      .option('inferSchema', 'true')
+      .option('multiLine', 'true').option('quote', '"').option('escape', '"')
+      .load(INPUT_PATH))
+
+# ---- Limpieza mínima (según tus columnas) ----
+# Drop nulos
+df_clean = df.dropna(subset=[COL_EDAD, COL_ANO, COL_DX])
+
+# Normaliza diagnóstico y fuerza números en edad/año
+df_clean = df_clean.withColumn(COL_DX, F.upper(F.trim(F.col(COL_DX))))
+for c in [COL_EDAD, COL_ANO]:
+    df_clean = df_clean.withColumn(c, F.regexp_replace(F.col(c), r'[^0-9]', '').cast('int'))
+df_clean = df_clean.filter((F.col(COL_EDAD) >= 0) & (F.col(COL_EDAD) <= 120))
+
+# ---- Tabla 1: Top 10 diagnósticos global ----
+top10 = (df_clean.groupBy(COL_DX)
+         .count()
+         .withColumnRenamed('count', 'total_pacientes')
+         .orderBy(F.col('total_pacientes').desc())
+         .limit(10))
+
+print("\nTop 10 diagnósticos más comunes\n")
+top10.show(truncate=False)
+
+# ---- Tabla 2: Top-3 por rango de edad ----
+df_rng = df_clean.withColumn(
+    "rango_edad",
+    when(col(COL_EDAD) <= 5, "Primera infancia")
+    .when((col(COL_EDAD) >= 6) & (col(COL_EDAD) <= 11), "Infancia")
+    .when((col(COL_EDAD) >= 12) & (col(COL_EDAD) <= 18), "Adolescencia")
+    .when((col(COL_EDAD) >= 14) & (col(COL_EDAD) <= 26), "Juventud")  # (solape respetado)
+    .when((col(COL_EDAD) >= 27) & (col(COL_EDAD) <= 59), "Adultez")
+    .otherwise("Persona mayor")
+)
+
+agg_rng = df_rng.groupBy("rango_edad", COL_DX).count()
+w = Window.partitionBy("rango_edad").orderBy(F.col("count").desc())
+top3_rng = agg_rng.withColumn("rank", row_number().over(w)).filter(F.col("rank") <= 3)
+
+top3_rng = top3_rng.withColumn(
+    "orden",
+    when(col("rango_edad") == "Primera infancia", 1)
+    .when(col("rango_edad") == "Infancia", 2)
+    .when(col("rango_edad") == "Adolescencia", 3)
+    .when(col("rango_edad") == "Juventud", 4)
+    .when(col("rango_edad") == "Adultez", 5)
+    .when(col("rango_edad") == "Persona mayor", 6)
+)
+
+print("\nTop 3 Diagnósticos más comunes por rango de edad (ordenado)\n")
+(top3_rng.orderBy("orden", "rank")
+         .select("rango_edad", COL_DX, "count", "rank")
+         .show(truncate=False))
+
+from time import sleep
+print("Spark UI:", spark.sparkContext.uiWebUrl)  # te imprime la URL real de la UI
