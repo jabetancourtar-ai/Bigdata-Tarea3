@@ -77,4 +77,4 @@ print("\nTop 3 Diagnósticos más comunes por rango de edad (ordenado)\n")
          .show(truncate=False))
 
 from time import sleep
-print("Spark UI:", spark.sparkContext.uiWebUrl)  # te imprime la URL real de la UI
+print("Spark UI:", spark.sparkContext.uiWebUrl)  
